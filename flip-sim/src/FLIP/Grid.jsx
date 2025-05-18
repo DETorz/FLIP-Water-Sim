@@ -34,13 +34,6 @@ export default function Grid({
     gridTemplateRows:    `repeat(${height}, ${cellSize}px)`,
   };
 
-  const baseCellStyle = {
-    width: `${cellSize}px`,
-    height: `${cellSize}px`,
-    boxSizing: 'border-box',
-    border: '1px solid #000',
-  };
-
   return (
     <div style={containerStyle}>
       <div style={gridWrapperStyle}>
@@ -54,29 +47,36 @@ export default function Grid({
 
             const row = Math.floor(idx / width);
             const col = idx % width;
-            if (
-              row === 0 || row === height - 1 || col === 0 || col === width - 1
-            ) {
+            if (row === 0 || row === height - 1 || col === 0 || col === width - 1) {
               bg = '#555';
             }
+
+            // border matches background if filled, else default black
+            const borderColor = bg === 'transparent' ? '#e6e6e6' : bg;
 
             return (
               <div
                 key={idx}
-                style={{ ...baseCellStyle, backgroundColor: bg }}
+                style={{
+                  width: `${cellSize}px`,
+                  height: `${cellSize}px`,
+                  boxSizing: 'border-box',
+                  backgroundColor: bg,
+                  border: `1px solid ${borderColor}`,
+                }}
               />
             );
           })}
         </div>
 
-        {/* particles as dots, continuous positions */}
+        {/* particles as dots */}
         {particlePositions.map((p, i) => (
           <div
             key={i}
             style={{
               position: 'absolute',
-              width: '6px',
-              height: '6px',
+              width: '5px',
+              height: '5px',
               borderRadius: '50%',
               backgroundColor: 'black',
               left: `${p.x * cellSize}px`,
