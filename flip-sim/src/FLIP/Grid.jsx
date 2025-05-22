@@ -31,7 +31,7 @@ export default function Grid({
   const gridStyle = {
     display: 'grid',
     gridTemplateColumns: `repeat(${width}, ${cellSize}px)`,
-    gridTemplateRows:    `repeat(${height}, ${cellSize}px)`,
+    gridTemplateRows: `repeat(${height}, ${cellSize}px)`,
   };
 
   return (
@@ -42,8 +42,8 @@ export default function Grid({
           {cells.map((_, idx) => {
             const count = cellStates[idx] || 0;
             let bg = 'transparent';
-            if (count >= 2) bg = 'orange';
-            else if (count === 1) bg = 'red';
+            if (count >= 2) bg = '#FFBA0D'; // dark
+            else if (count === 1) bg = '#FFF04D'; // light
 
             const row = Math.floor(idx / width);
             const col = idx % width;
@@ -51,7 +51,6 @@ export default function Grid({
               bg = '#555';
             }
 
-            // border matches background if filled, else default black
             const borderColor = bg === 'transparent' ? '#e6e6e6' : bg;
 
             return (
@@ -80,7 +79,7 @@ export default function Grid({
               borderRadius: '50%',
               backgroundColor: 'black',
               left: `${p.x * cellSize}px`,
-              top:  `${p.y * cellSize}px`,
+              top: `${p.y * cellSize}px`,
               pointerEvents: 'none',
               zIndex: 1,
             }}

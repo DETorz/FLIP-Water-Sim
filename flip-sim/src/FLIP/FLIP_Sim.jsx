@@ -1,267 +1,207 @@
-// FLIP_Sim.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import Grid from './Grid';
 
-class FLIP_Particle {
-  constructor(x, y, vx = 0, vy = 0, mass = 1) {
+// SPH Fluid with uniform-grid neighbor search
+class Particle {
+  constructor(x, y) {
     this.x = x;
     this.y = y;
-    this.vx = vx;
-    this.vy = vy;
-    this.mass = mass;
+    this.vx = 0;
+    this.vy = 0;
+    this.mass = 1;
+    this.density = 0;
+    this.pressure = 0;
   }
 }
 
-/**
- * FLIP_Sim: FLIP solver with physics-based spring repulsion
- * Applies smooth spring forces based on particle masses
- */
 export function FLIP_SIM({
   width = 48,
   height = 48,
-  dt = 0.1,
-  particleCount = 500,
+  dt = 0.04,
+  particleCount = 1000,
   cellSize = 15,
   gravityMag = 9.81,
-  pressureIters = 4,
-  buoyancy = 2,
-  springStiffness = 50,
-  springDamping = 2, 
+  smoothingRadius = 1.5,
+  kPressure = 8.0,
+  maxForce = 5.0,
 }) {
-  // State
   const [cellStates, setCellStates] = useState(Array(width * height).fill(0));
   const [positions, setPositions] = useState([]);
-  const [gravity, setGravity] = useState({ x: 0, y: gravityMag });
   const [showParticles, setShowParticles] = useState(true);
-
-  // Mouse drag for gravity direction
+  const [gravity, setGravity] = useState({ x: 0, y: gravityMag });
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [dragCurr, setDragCurr] = useState({ x: 0, y: 0 });
-  const wrapperRef = useRef(null);
 
+  const wrapperRef = useRef(null);
+  const frameRef = useRef(0);
+
+  // Initialize particles in grid layout
+  const particlesRef = useRef(
+    (() => {
+      const arr = [];
+      const nCols = Math.ceil(Math.sqrt(particleCount));
+      const nRows = Math.ceil(particleCount / nCols);
+      let idx = 0;
+      for (let r = 0; r < nRows; r++) {
+        for (let c = 0; c < nCols && idx < particleCount; c++, idx++) {
+          const x = 1 + (c + 0.5) * ((width - 2) / nCols);
+          const y = 1 + (r + 0.5) * ((height - 2) / nRows);
+          arr.push(new Particle(x, y));
+        }
+      }
+      return arr;
+    })()
+  );
+
+  // Buckets for neighbor search
+  const bucketsRef = useRef(Array.from({ length: width * height }, () => []));
+
+  // Mouse handlers
   const onDown = e => {
-    const r = wrapperRef.current.getBoundingClientRect();
-    setDragStart({ x: e.clientX - r.left, y: e.clientY - r.top });
-    setDragCurr({ x: e.clientX - r.left, y: e.clientY - r.top });
+    const rect = wrapperRef.current.getBoundingClientRect();
+    setDragStart({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    setDragCurr({ x: e.clientX - rect.left, y: e.clientY - rect.top });
     setDragging(true);
   };
   const onMove = e => {
     if (!dragging) return;
-    const r = wrapperRef.current.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
     setDragCurr({ x, y });
     const dx = x - dragStart.x;
     const dy = y - dragStart.y;
-    const n = Math.hypot(dx, dy) || 1;
-    setGravity({ x: (dx / n) * gravityMag, y: (dy / n) * gravityMag });
+    const len = Math.hypot(dx, dy) || 1;
+    setGravity({ x: (dx / len) * gravityMag, y: (dy / len) * gravityMag });
   };
   const onUp = () => setDragging(false);
 
-  // Initialize particles
-  const particlesRef = useRef(
-    Array.from({ length: particleCount }, () => {
-      const x = 1 + Math.random() * (width - 2);
-      const y = 1 + Math.random() * (height - 2);
-      const a = Math.random() * 2 * Math.PI;
-      const s = Math.random() * 0.5;
-      return new FLIP_Particle(x, y, Math.cos(a) * s, Math.sin(a) * s);
-    })
-  );
-
-  // Grid buffers
-  const massArr   = useRef(new Float32Array(width * height));
-  const velArr    = useRef(new Float32Array(width * height * 2));
-  const oldArr    = useRef(new Float32Array(width * height * 2));
-  const presArr   = useRef(new Float32Array(width * height));
-  const divArr    = useRef(new Float32Array(width * height));
-
   useEffect(() => {
     let anim;
-    const personalSpace = 1;
+    const h2 = smoothingRadius * smoothingRadius;
+    const kernel = r2 => {
+      const d = h2 - r2;
+      return d > 0 ? d * d : 0;
+    };
 
     function step() {
-      const m = massArr.current;
-      const v = velArr.current;
-      const ov = oldArr.current;
-      const p = presArr.current;
-      const d = divArr.current;
+      const parts = particlesRef.current;
+      const buckets = bucketsRef.current;
 
-      // Clear grids
-      m.fill(0);
-      v.fill(0);
-      ov.fill(0);
-      p.fill(0);
-      d.fill(0);
+      // Clear buckets
+      for (let b of buckets) b.length = 0;
 
-      // P2G
-      particlesRef.current.forEach(pt => {
-        const i = Math.floor(pt.x);
-        const j = Math.floor(pt.y);
-        if (i < 1 || i >= width - 1 || j < 1 || j >= height - 1) return;
-        const idx = j * width + i;
-        m[idx] += pt.mass;
-        v[2 * idx]     += pt.mass * pt.vx;
-        v[2 * idx + 1] += pt.mass * pt.vy;
-      });
-
-      // Grid velocities
-      for (let idx = 0; idx < width * height; idx++) {
-        if (m[idx] > 0) {
-          const vx = v[2 * idx]     / m[idx];
-          const vy = v[2 * idx + 1] / m[idx];
-          ov[2 * idx]     = vx;
-          ov[2 * idx + 1] = vy;
-          v[2 * idx]     = vx;
-          v[2 * idx + 1] = vy;
-        }
+      // Populate buckets using current positions
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i];
+        const cx = Math.floor(p.x);
+        const cy = Math.floor(p.y);
+        buckets[cy * width + cx].push(i);
       }
 
-      // Apply gravity
-      const { x: gx, y: gy } = gravity;
-      for (let idx = 0; idx < width * height; idx++) {
-        if (m[idx] > 0) {
-          v[2 * idx]     += gx * dt;
-          v[2 * idx + 1] += gy * dt;
-        }
-      }
-
-      // Pressure projection
-      for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-          const idx = y * width + x;
-          const uxR = v[2 * (idx + 1)], uxL = v[2 * (idx - 1)];
-          const uyD = v[2 * ((y + 1) * width + x) + 1], uyU = v[2 * ((y - 1) * width + x) + 1];
-          d[idx] = (uxR - uxL + uyD - uyU) * 0.5;
-          p[idx] = 0;
-        }
-      }
-      for (let it = 0; it < pressureIters; it++) {
-        for (let y = 1; y < height - 1; y++) {
-          for (let x = 1; x < width - 1; x++) {
-            const idx = y * width + x;
-            p[idx] = (p[idx - 1] + p[idx + 1] + p[idx - width] + p[idx + width] - d[idx]) * 0.25;
-          }
-        }
-      }
-
-      // Subtract gradient & buoyancy
-      for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-          const idx = y * width + x;
-          const gradX = (p[idx + 1] - p[idx - 1]) * 0.5;
-          const gradY = (p[idx + width] - p[idx - width]) * 0.5;
-          v[2 * idx]     -= gradX;
-          v[2 * idx + 1] -= gradY;
-          v[2 * idx + 1] += p[idx] * buoyancy * dt;
-        }
-      }
-
-      // G2P
-      particlesRef.current.forEach(pt => {
-        const i = Math.floor(pt.x);
-        const j = Math.floor(pt.y);
-        if (i < 1 || i >= width - 1 || j < 1 || j >= height - 1) return;
-        const idx = j * width + i;
-        pt.vx += v[2 * idx]   - ov[2 * idx];
-        pt.vy += v[2 * idx + 1] - ov[2 * idx + 1];
-      });
-
-      // Advect & clamp
-      particlesRef.current.forEach(pt => {
-        pt.x += pt.vx * dt;
-        pt.y += pt.vy * dt;
-        pt.x = Math.min(Math.max(pt.x, 1), width - 2);
-        pt.y = Math.min(Math.max(pt.y, 1), height - 2);
-      });
-
-      // Build hash-grid
-      const buckets = new Map();
-      const keyOfCell = (hx, hy) => `${hx},${hy}`;
-      particlesRef.current.forEach((pt, i) => {
-        const hx = Math.floor(pt.x);
-        const hy = Math.floor(pt.y);
-        const key = keyOfCell(hx, hy);
-        if (!buckets.has(key)) buckets.set(key, []);
-        buckets.get(key).push(i);
-      });
-
-      // Spring repulsion
-      particlesRef.current.forEach((p1, i) => {
-        const hx = Math.floor(p1.x);
-        const hy = Math.floor(p1.y);
+      // Compute densities and pressures
+      let totalDensity = 0;
+      for (let p of parts) p.density = 0;
+      for (let p of parts) {
+        const cx = Math.floor(p.x);
+        const cy = Math.floor(p.y);
         for (let oy = -1; oy <= 1; oy++) {
           for (let ox = -1; ox <= 1; ox++) {
-            const bucket = buckets.get(keyOfCell(hx + ox, hy + oy));
-            if (!bucket) continue;
-            bucket.forEach(j => {
-              if (j <= i) return;
-              const p2 = particlesRef.current[j];
-              const dx = p2.x - p1.x;
-              const dy = p2.y - p1.y;
-              const dist = Math.hypot(dx, dy);
-              if (dist > 0 && dist < personalSpace * 1.2) {
-                const count = bucket.length;
-                const rest = personalSpace * (0.8 + 0.2 * Math.min(count / 6, 1));
-                const delta = dist - rest;
-                const nx = dx / dist;
-                const ny = dy / dist;
-                const fs = springStiffness * delta;
-                const relV = (p2.vx - p1.vx) * nx + (p2.vy - p1.vy) * ny;
-                const fd = springDamping * relV;
-                const f = fs + fd;
-                const fx = f * nx;
-                const fy = f * ny;
-                p1.vx += (fx / p1.mass) * dt;
-                p1.vy += (fy / p1.mass) * dt;
-                p2.vx -= (fx / p2.mass) * dt;
-                p2.vy -= (fy / p2.mass) * dt;
-              }
-            });
+            const nc = cx + ox;
+            const nr = cy + oy;
+            if (nc < 0 || nc >= width || nr < 0 || nr >= height) continue;
+            const bucket = buckets[nr * width + nc];
+            for (let j = 0; j < bucket.length; j++) {
+              const q = parts[bucket[j]];
+              const dx = p.x - q.x;
+              const dy = p.y - q.y;
+              const r2 = dx * dx + dy * dy;
+              p.density += kernel(r2);
+            }
           }
         }
-      });
+        totalDensity += p.density;
+      }
+      const avgDensity = totalDensity / particleCount;
+      for (let p of parts) {
+        p.pressure = kPressure * (p.density - avgDensity);
+      }
 
-      // Build cell counts and update state
-      const counts = Array(width * height).fill(0);
-      particlesRef.current.forEach(pt => {
-        const ix = Math.floor(pt.x);
-        const iy = Math.floor(pt.y);
-        counts[iy * width + ix]++;
-      });
-      setCellStates(counts);
-      setPositions(particlesRef.current.map(pt => ({ x: pt.x, y: pt.y })));
+      // Integrate forces (pressure + gravity)
+      for (let p of parts) {
+        let fx = gravity.x;
+        let fy = gravity.y;
+        const cx = Math.floor(p.x);
+        const cy = Math.floor(p.y);
+        for (let oy = -1; oy <= 1; oy++) {
+          for (let ox = -1; ox <= 1; ox++) {
+            const nc = cx + ox;
+            const nr = cy + oy;
+            if (nc < 0 || nc >= width || nr < 0 || nr >= height) continue;
+            const bucket = buckets[nr * width + nc];
+            for (let j = 0; j < bucket.length; j++) {
+              const q = parts[bucket[j]];
+              if (q === p) continue;
+              const dx = p.x - q.x;
+              const dy = p.y - q.y;
+              const r2 = dx * dx + dy * dy;
+              if (r2 > h2) continue;
+              const rLen = Math.sqrt(r2);
+              const minDist = smoothingRadius * 0.1;
+              if (rLen < minDist) continue;
+              const w = kernel(r2);
+              const presTerm = (p.pressure + q.pressure) / (q.density + 1e-6);
+              fx += (dx / rLen) * w * presTerm;
+              fy += (dy / rLen) * w * presTerm;
+            }
+          }
+        }
+        // Clamp force
+        const fMag = Math.hypot(fx, fy);
+        if (fMag > maxForce) {
+          fx = (fx / fMag) * maxForce;
+          fy = (fy / fMag) * maxForce;
+        }
+        // Dampen and integrate
+        p.vx = (p.vx + fx * dt) * 0.95;
+        p.vy = (p.vy + fy * dt) * 0.95;
+        p.x = Math.min(Math.max(p.x + p.vx * dt, 1), width - 2);
+        p.y = Math.min(Math.max(p.y + p.vy * dt, 1), height - 2);
+      }
 
-      // Next frame
+      // Throttle render: update UI every other frame
+      frameRef.current++;
+      if (frameRef.current % 2 === 0) {
+        const counts = Array(width * height).fill(0);
+        for (let p of parts) counts[Math.floor(p.y) * width + Math.floor(p.x)]++;
+        setCellStates(counts);
+        // build positions array without map() arrow to avoid no-loop-func warning
+        const newPositions = [];
+        for (let i = 0; i < parts.length; i++) {
+          const pp = parts[i];
+          newPositions.push({ x: pp.x, y: pp.y });
+        }
+        setPositions(newPositions);
+      }
+
       anim = requestAnimationFrame(step);
     }
-
     anim = requestAnimationFrame(step);
     return () => cancelAnimationFrame(anim);
-  }, [width, height, dt, gravity, pressureIters, buoyancy, springStiffness, springDamping]);
+  }, [width, height, dt, gravity, smoothingRadius, kPressure, maxForce, particleCount]);
 
   return (
-    <div style={{ textAlign: 'center', margin: '8px' }}>
+    <div style={{ textAlign: 'center', margin: 8 }}>
       <label>
-        <input
-          type="checkbox"
-          checked={showParticles}
-          onChange={e => setShowParticles(e.target.checked)}
-        />{' '}Show particles
+        <input type="checkbox" checked={showParticles} onChange={e => setShowParticles(e.target.checked)} /> Show particles
       </label>
       <div
         ref={wrapperRef}
         onMouseDown={onDown}
         onMouseMove={onMove}
         onMouseUp={onUp}
-        style={{
-          position: 'relative',
-          width: `${width * cellSize}px`,
-          height: `${height * cellSize}px`,
-          margin: 'auto',
-          cursor: 'crosshair',
-        }}
+        style={{ position: 'relative', width: width * cellSize, height: height * cellSize, margin: 'auto', cursor: 'crosshair' }}
       >
         <Grid
           width={width}
@@ -272,14 +212,7 @@ export function FLIP_SIM({
         />
         {dragging && (
           <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}>
-            <line
-              x1={dragStart.x}
-              y1={dragStart.y}
-              x2={dragCurr.x}
-              y2={dragCurr.y}
-              stroke="magenta"
-              strokeWidth="2"
-            />
+            <line x1={dragStart.x} y1={dragStart.y} x2={dragCurr.x} y2={dragCurr.y} stroke="magenta" strokeWidth={2} />
           </svg>
         )}
       </div>
