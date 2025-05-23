@@ -8,8 +8,9 @@ export default function Grid({
   cellStates = [],
   particlePositions = [],
 }) {
-  const total = width * height;
-  const cells = Array.from({ length: total });
+  const centerX = (width - 1) / 2;
+  const centerY = (height - 1) / 2;
+  const radius = Math.min(width, height) / 2 - 1;
 
   const containerStyle = {
     margin: 0,
@@ -37,22 +38,23 @@ export default function Grid({
   return (
     <div style={containerStyle}>
       <div style={gridWrapperStyle}>
-        {/* grid cells */}
         <div style={gridStyle}>
-          {cells.map((_, idx) => {
+          {Array.from({ length: width * height }).map((_, idx) => {
             const count = cellStates[idx] || 0;
             let bg = 'transparent';
-            if (count >= 2) bg = '#FFBA0D'; // dark
-            else if (count === 1) bg = '#FFF04D'; // light
+            if (count >= 2) bg = '#FFBA0D';
+            else if (count === 1) bg = '#FFF04D';
 
             const row = Math.floor(idx / width);
             const col = idx % width;
-            if (row === 0 || row === height - 1 || col === 0 || col === width - 1) {
+            // Outside circle is solid
+            const dx = col - centerX;
+            const dy = row - centerY;
+            if (dx * dx + dy * dy > radius * radius) {
               bg = '#555';
             }
 
             const borderColor = bg === 'transparent' ? '#e6e6e6' : bg;
-
             return (
               <div
                 key={idx}
@@ -67,15 +69,13 @@ export default function Grid({
             );
           })}
         </div>
-
-        {/* particles as dots */}
         {particlePositions.map((p, i) => (
           <div
             key={i}
             style={{
               position: 'absolute',
-              width: '5px',
-              height: '5px',
+              width: '4px',
+              height: '4px',
               borderRadius: '50%',
               backgroundColor: 'black',
               left: `${p.x * cellSize}px`,
