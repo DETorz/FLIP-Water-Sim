@@ -3,7 +3,7 @@
 
 ## React structure
 - `flip-sim/` - Application
-- 'src/FLIP/` - Simulation components
+    - `src/FLIP/` - Simulation components
 
 ## Setup & running
 ```bash
